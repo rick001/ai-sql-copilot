@@ -254,6 +254,8 @@ class OllamaClient:
                     parsed = json.loads(parsed)
                 # Validate it has at least 'answer' key
                 if isinstance(parsed, dict) and "answer" in parsed:
+                    # Clean up empty strings in viz spec before returning
+                    parsed = self._clean_viz_spec(parsed)
                     return parsed
             except (json.JSONDecodeError, TypeError):
                 pass
@@ -266,6 +268,8 @@ class OllamaClient:
                     candidate = answer_text[start:end+1]
                     parsed = json.loads(candidate)
                     if isinstance(parsed, dict) and "answer" in parsed:
+                        # Clean up empty strings in viz spec
+                        parsed = self._clean_viz_spec(parsed)
                         return parsed
                 except json.JSONDecodeError:
                     pass
@@ -291,7 +295,34 @@ class OllamaClient:
             result = {"answer": answer_text}  # Remove truncation to see full response
             if sql:
                 result["sql"] = sql
+            # Clean up any viz spec before returning
+            result = self._clean_viz_spec(result)
             return result
         finally:
             await self.client.aclose()
+    
+    def _clean_viz_spec(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Clean up empty strings in viz spec to convert them to None"""
+        if isinstance(data, dict) and "viz" in data and isinstance(data["viz"], dict):
+            viz = data["viz"]
+            # Convert empty strings to None for optional fields
+            if "x" in viz and viz["x"] == "":
+                viz["x"] = None
+            if "y" in viz:
+                if isinstance(viz["y"], list) and len(viz["y"]) == 0:
+                    viz["y"] = None
+                elif isinstance(viz["y"], list):
+                    # Remove empty strings from y list
+                    viz["y"] = [v for v in viz["y"] if v != ""]
+                    if len(viz["y"]) == 0:
+                        viz["y"] = None
+            if "groupBy" in viz:
+                if isinstance(viz["groupBy"], list) and len(viz["groupBy"]) == 0:
+                    viz["groupBy"] = None
+                elif isinstance(viz["groupBy"], list):
+                    # Remove empty strings from groupBy list
+                    viz["groupBy"] = [v for v in viz["groupBy"] if v != ""]
+                    if len(viz["groupBy"]) == 0:
+                        viz["groupBy"] = None
+        return data
 
