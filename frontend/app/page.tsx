@@ -5,9 +5,9 @@ import { LineChart, Line, BarChart, Bar, XAxis, YAxis, Tooltip, Legend, Responsi
 
 type VizSpec = {
   type: "line" | "bar" | "table"
-  x?: "date" | "category" | "region" | "store" | "sku"
+  x?: "date" | "category" | "region" | "store" | "store_name" | "store_id" | "sku"
   y?: string[]
-  groupBy?: ("date" | "region" | "category" | "store" | "sku")[]
+  groupBy?: ("date" | "region" | "category" | "store" | "store_name" | "store_id" | "sku")[]
   aggregation?: "sum" | "avg" | "count"
   explanations?: string[]
 }

@@ -3,9 +3,9 @@ from typing import List, Optional, Literal, Dict, Any
 
 class VizSpec(BaseModel):
     type: Literal["line", "bar", "table"]
-    x: Optional[Literal["date", "category", "region", "store", "sku"]] = None
+    x: Optional[Literal["date", "category", "region", "store", "store_name", "sku"]] = None
     y: Optional[List[str]] = None
-    groupBy: Optional[List[Literal["date", "region", "category", "store", "sku"]]] = None
+    groupBy: Optional[List[Literal["date", "region", "category", "store", "store_name", "store_id", "sku"]]] = None
     aggregation: Optional[Literal["sum", "avg", "count"]] = None
     explanations: Optional[List[str]] = None
     
@@ -31,6 +31,26 @@ class VizSpec(BaseModel):
         # Handle empty lists or None
         if v is None or (isinstance(v, list) and len(v) == 0):
             return None
+        # Normalize store_name and store_id to 'store' for consistency
+        if isinstance(v, list):
+            normalized = []
+            for item in v:
+                if item in ('store_name', 'store_id'):
+                    normalized.append('store')
+                else:
+                    normalized.append(item)
+            return normalized
+        return v
+    
+    @field_validator('x', mode='before')
+    @classmethod
+    def validate_x(cls, v):
+        # Convert empty strings to None to satisfy Optional[Literal[...]]
+        if v == '' or v is None:
+            return None
+        # Normalize store_name and store_id to 'store'
+        if v in ('store_name', 'store_id'):
+            return 'store'
         return v
 
 class ModelEnvelope(BaseModel):

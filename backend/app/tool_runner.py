@@ -60,16 +60,30 @@ class ToolRunner:
             rows = self.repo.query(sql)
         except Exception as db_error:
             error_msg = str(db_error)
-            # Provide database-specific hints
+            # Extract the core error (before any periods or extra text)
+            # ClickHouse errors often have format: "Code: X. DB::Exception: message"
+            core_error = error_msg
+            if "DB::Exception:" in error_msg:
+                # Extract just the exception message
+                parts = error_msg.split("DB::Exception:", 1)
+                if len(parts) > 1:
+                    core_error = parts[1].strip()
+                    # Take only the first sentence to avoid confusion
+                    if "." in core_error:
+                        core_error = core_error.split(".")[0] + "."
+            
+            # Provide database-specific hints separately
             hint = ""
             if "Unknown expression" in error_msg or "function" in error_msg.lower():
-                hint = " Check that all functions and syntax are compatible with the database. Use standard SQL functions."
+                hint = "Use standard SQL functions only."
+            elif "Syntax error" in error_msg or "failed at position" in error_msg:
+                hint = "Check SQL syntax, especially string quotes and parentheses."
             elif "table" in error_msg.lower() and "does not exist" in error_msg.lower():
-                hint = " Only use the 'retail_sales' table. No other tables exist."
+                hint = "Only use the retail_sales table."
             
             return {
-                "error": f"Database error: {error_msg[:200]}.{hint}",
-                "hint": f"Try simplifying your SQL query. Available columns: date, store_id, store_name, region, category, sku, units, net_sales"
+                "error": f"Database error: {core_error[:150]}",
+                "hint": f"{hint} Available columns: date, store_id, store_name, region, category, sku, units, net_sales"
             }
         
         schema = self.repo.infer_schema(rows)

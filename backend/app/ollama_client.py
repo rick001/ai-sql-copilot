@@ -1,5 +1,6 @@
 from typing import Any, Dict, List, Optional
 import json
+import re
 import httpx
 from .settings import Settings
 
@@ -49,6 +50,8 @@ class OllamaClient:
             ] + ollama_messages,
             "options": {
                 "temperature": 0.2,
+                # Try to enforce JSON output
+                "format": "json"  # Ollama supports format: json to enforce JSON output
             }
         }
         
@@ -116,10 +119,15 @@ class OllamaClient:
                                 error_msg = tool_result.get("error", "Unknown error")
                                 hint = tool_result.get("hint", "")
                                 
-                                feedback = f"SQL execution failed: {error_msg}"
+                                # Format feedback clearly to avoid confusion
+                                feedback = f"The SQL query failed with this error: {error_msg}\n\n"
                                 if hint:
-                                    feedback += f"\nHint: {hint}"
-                                feedback += "\n\nPlease generate a corrected, complete SQL query. The query must include: SELECT columns FROM retail_sales [WHERE/GROUP BY/ORDER BY clauses]."
+                                    feedback += f"Hint: {hint}\n\n"
+                                feedback += "Please generate a NEW, corrected SQL query. Important:\n"
+                                feedback += "- Use proper SQL syntax with correct quotes (single quotes for string values)\n"
+                                feedback += "- Do NOT include error messages or hints in the SQL query itself\n"
+                                feedback += "- The query must include: SELECT columns FROM retail_sales [WHERE/GROUP BY/ORDER BY clauses]\n"
+                                feedback += "- Use single quotes around string values like: WHERE region = 'West'"
                                 
                                 ollama_messages.append({
                                     "role": "tool",
@@ -201,14 +209,20 @@ class OllamaClient:
                 
                 # Final call with tool results (only proceed if we have successful results)
                 if successful_tool_result and "error" not in successful_tool_result:
+                    # Add explicit instruction to return JSON
+                    final_instruction = {
+                        "role": "user",
+                        "content": "Now return ONLY a JSON object with this structure: {\"answer\": \"description\", \"sql\": \"the sql query\", \"viz\": {...}}. NO text, NO markdown, NO explanations. Just the JSON."
+                    }
+                    
                     payload_final = {
                         "model": self.model,
                         "messages": [
                             {"role": "system", "content": system_prompt},
-                        ] + ollama_messages,
+                        ] + ollama_messages + [final_instruction],
                         "stream": False,
                         "options": {
-                            "temperature": 0.2,
+                            "temperature": 0.1,  # Lower temperature for more structured output
                         }
                     }
                     response_final = await self.client.post(
@@ -217,14 +231,37 @@ class OllamaClient:
                     )
                     response_final.raise_for_status()
                     response_final_text = response_final.text.strip()
+                    
+                    # When format: json is used, Ollama may return the JSON directly or in message.content
                     try:
                         result_final = json.loads(response_final_text)
+                        # If it's already the envelope structure, return it
+                        if isinstance(result_final, dict) and "answer" in result_final:
+                            parsed = self._clean_viz_spec(result_final)
+                            return parsed
+                        # Otherwise, check if it's in message.content
+                        if "message" in result_final:
+                            message = result_final.get("message", {})
+                            content = message.get("content", "")
+                            if isinstance(content, str):
+                                try:
+                                    parsed_content = json.loads(content)
+                                    if isinstance(parsed_content, dict) and "answer" in parsed_content:
+                                        parsed = self._clean_viz_spec(parsed_content)
+                                        return parsed
+                                except json.JSONDecodeError:
+                                    pass
                     except json.JSONDecodeError:
+                        # Fallback to old parsing
                         first_line = response_final_text.split('\n')[0] if '\n' in response_final_text else response_final_text
                         try:
                             result_final = json.loads(first_line)
+                            if isinstance(result_final, dict) and "answer" in result_final:
+                                parsed = self._clean_viz_spec(result_final)
+                                return parsed
                         except json.JSONDecodeError:
                             result_final = {"message": {"content": response_final_text}}
+                    
                     message = result_final.get("message", {})
                 else:
                     # If we have errors, construct a response from the error
@@ -238,12 +275,25 @@ class OllamaClient:
             # Handle case where content might already be a dict
             if isinstance(answer_text, dict):
                 if "answer" in answer_text:
-                    return answer_text
+                    parsed = self._clean_viz_spec(answer_text)
+                    return parsed
                 answer_text = str(answer_text)
             
             # Ensure answer_text is a string
             if not isinstance(answer_text, str):
                 answer_text = str(answer_text)
+            
+            # Strip markdown code blocks if present (```json ... ```)
+            if "```json" in answer_text or "```" in answer_text:
+                # Extract JSON from markdown code block
+                json_match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', answer_text, re.DOTALL)
+                if json_match:
+                    answer_text = json_match.group(1)
+                else:
+                    # Try to extract any JSON object
+                    json_match = re.search(r'(\{.*\})', answer_text, re.DOTALL)
+                    if json_match:
+                        answer_text = json_match.group(1)
             
             # Ollama may return JSON as an escaped string, so try parsing twice
             try:
@@ -261,43 +311,43 @@ class OllamaClient:
                 pass
             
             # Fallback: try to extract JSON from text (might be embedded in markdown or text)
+            # Look for JSON object boundaries more aggressively
             start = answer_text.find("{")
             end = answer_text.rfind("}")
             if start != -1 and end != -1 and end > start:
                 try:
                     candidate = answer_text[start:end+1]
+                    # Try to find a complete JSON object
                     parsed = json.loads(candidate)
                     if isinstance(parsed, dict) and "answer" in parsed:
                         # Clean up empty strings in viz spec
                         parsed = self._clean_viz_spec(parsed)
                         return parsed
                 except json.JSONDecodeError:
-                    pass
+                    # Try nested JSON extraction
+                    try:
+                        # Look for JSON inside markdown code blocks or text
+                        json_pattern = r'\{(?:[^{}]|(?:\{[^{}]*\}))*\}'
+                        import re
+                        matches = re.findall(json_pattern, answer_text, re.DOTALL)
+                        for match in reversed(matches):  # Try longest first
+                            try:
+                                parsed = json.loads(match)
+                                if isinstance(parsed, dict) and "answer" in parsed:
+                                    parsed = self._clean_viz_spec(parsed)
+                                    return parsed
+                            except json.JSONDecodeError:
+                                continue
+                    except Exception:
+                        pass
             
-            # If no JSON found, try to extract SQL from text (simple heuristic)
-            sql = None
-            if "SELECT" in answer_text.upper() or "FROM retail_sales" in answer_text.lower():
-                # Try to extract SQL statement
-                sql_match = None
-                for line in answer_text.split('\n'):
-                    if 'SELECT' in line.upper():
-                        # Find SQL block
-                        sql_start = answer_text.upper().find('SELECT')
-                        if sql_start != -1:
-                            # Find end (semicolon or newline)
-                            sql_end = answer_text.find(';', sql_start)
-                            if sql_end == -1:
-                                sql_end = len(answer_text)
-                            sql = answer_text[sql_start:sql_end].strip()
-                            break
-            
-            # Return minimal envelope with extracted SQL if found
-            result = {"answer": answer_text}  # Remove truncation to see full response
-            if sql:
-                result["sql"] = sql
-            # Clean up any viz spec before returning
-            result = self._clean_viz_spec(result)
-            return result
+            # If no JSON found, this is a failure - Ollama didn't follow instructions
+            # Return an error message to the user
+            return {
+                "answer": f"I encountered an issue generating the response. The model returned text instead of JSON. Please try rephrasing your question. Original response: {answer_text[:200]}...",
+                "sql": None,
+                "viz": None
+            }
         finally:
             await self.client.aclose()
     
