@@ -90,6 +90,8 @@ Before you begin, ensure you have:
    - **Health Check**: http://localhost:8000/healthz
    - **ClickHouse**: http://localhost:8123 (if using ClickHouse)
 
+   **Note**: The frontend displays CVS branding as part of the POC demonstration, but the underlying data is synthetic and hypothetical. The system can be adapted to work with any SQL database and data schema.
+
 ### Option 2: Local Development
 
 #### Backend Setup
