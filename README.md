@@ -1,6 +1,8 @@
-# CVS Analytics Copilot
+# AI SQL Copilot
 
-A modern analytics copilot POC that allows you to query retail sales data using natural language. Powered by Ollama (local Llama models) or AWS Bedrock, with ClickHouse or DuckDB as the SQL warehouse.
+An AI-powered analytics copilot that generates SQL queries from natural language using LLMs (Ollama/Bedrock) and executes them on ClickHouse or DuckDB. Features conversational query interface, automatic SQL generation with retry mechanisms, validation, and interactive data visualization.
+
+**Note**: This project uses hypothetical/example retail sales data to demonstrate the system. The CVS-branded frontend is part of a proof-of-concept, but the actual data is synthetic and not associated with any real company.
 
 ## 🏗️ Architecture
 
@@ -51,7 +53,7 @@ Before you begin, ensure you have:
 
 1. **Clone and navigate to the project:**
    ```bash
-   cd CVS
+   cd <project-directory>
    ```
 
 2. **Create environment file:**
@@ -239,7 +241,7 @@ CLICKHOUSE_URL=http://clickhouse:8123
 ## 🗂️ Project Structure
 
 ```
-CVS/
+project/
 ├── frontend/                 # Next.js frontend application
 │   ├── app/
 │   │   ├── page.tsx         # Main chat interface
@@ -277,7 +279,7 @@ CVS/
 
 ## 📊 Data Model
 
-The application uses a single table `retail_sales` with the following schema:
+**Important**: The data in this project is **hypothetical and synthetic**. It is designed as an example use case for demonstrating the AI SQL copilot capabilities. The application uses a single table `retail_sales` with the following schema:
 
 ```sql
 CREATE TABLE retail_sales (
@@ -292,12 +294,14 @@ CREATE TABLE retail_sales (
 );
 ```
 
-**Sample Data:**
+**Sample Data (Hypothetical/Example):**
 - ~1,080 rows of synthetic retail sales data
 - 12 months of historical data
 - 4 regions: North, South, East, West
 - 4 categories: Beverages, Snacks, Household, Personal Care
 - Multiple stores and SKUs
+
+**Note**: This data is entirely fictional and created for demonstration purposes. It does not represent actual sales data from any company. The CVS branding in the frontend is part of the POC demonstration but does not imply any association with the actual CVS company.
 
 ## 🔧 Usage
 
@@ -502,4 +506,4 @@ This is a POC project. Key areas for improvement:
 
 ## 📄 License
 
-Internal POC - CVS Health
+Internal POC - AI SQL Generation System
