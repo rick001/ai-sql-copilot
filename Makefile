@@ -16,6 +16,7 @@ help:
 	@echo "  make seed       - Seed the database"
 	@echo "  make logs       - View logs from all services"
 	@echo "  make clean      - Stop services and remove volumes"
+	@echo "  make list-models - List available AWS Bedrock models (requires AWS credentials)"
 	@echo "  make help       - Show this help message"
 	@echo ""
 
@@ -60,6 +61,28 @@ logs: check-docker
 clean: check-docker
 	@echo "🧹 Cleaning up (stopping services and removing volumes)..."
 	docker compose -f $(COMPOSE_FILE) down -v
+
+list-models:
+	@echo "🔍 Listing available AWS Bedrock models..."
+	@if docker compose -f $(COMPOSE_FILE) ps 2>/dev/null | grep -q "backend.*Up"; then \
+		echo "Running in Docker container..."; \
+		docker compose -f $(COMPOSE_FILE) exec -T backend python3 list_bedrock_models.py; \
+	else \
+		echo "Docker not running. Checking local Python environment..."; \
+		if python3 -c "import boto3" 2>/dev/null; then \
+			cd backend && python3 list_bedrock_models.py; \
+		else \
+			echo ""; \
+			echo "❌ boto3 is not installed locally."; \
+			echo ""; \
+			echo "Options:"; \
+			echo "  1. Install boto3: pip3 install boto3"; \
+			echo "  2. Start Docker services first: make start (then run this again)"; \
+			echo "  3. Install all backend dependencies: cd backend && pip install -r requirements.txt"; \
+			echo ""; \
+			exit 1; \
+		fi; \
+	fi
 
 check-env:
 	@if [ ! -f .env ]; then \

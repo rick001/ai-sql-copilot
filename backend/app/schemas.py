@@ -9,14 +9,6 @@ class VizSpec(BaseModel):
     aggregation: Optional[Literal["sum", "avg", "count"]] = None
     explanations: Optional[List[str]] = None
     
-    @field_validator('x', mode='before')
-    @classmethod
-    def validate_x(cls, v):
-        # Convert empty strings to None to satisfy Optional[Literal[...]]
-        if v == '' or v is None:
-            return None
-        return v
-    
     @field_validator('y', mode='before')
     @classmethod
     def validate_y(cls, v):
@@ -32,14 +24,22 @@ class VizSpec(BaseModel):
         if v is None or (isinstance(v, list) and len(v) == 0):
             return None
         # Normalize store_name and store_id to 'store' for consistency
+        # Filter out time aggregations (month, year, quarter, etc.) - these are not column names
         if isinstance(v, list):
             normalized = []
+            time_aggregations = {'month', 'year', 'quarter', 'week', 'day'}
             for item in v:
+                if not item:
+                    continue
+                # Filter out time aggregations - they're not actual columns
+                if isinstance(item, str) and item.lower() in time_aggregations:
+                    continue  # Skip time aggregations in groupBy
                 if item in ('store_name', 'store_id'):
                     normalized.append('store')
                 else:
                     normalized.append(item)
-            return normalized
+            # Return None if list becomes empty, otherwise return normalized list
+            return normalized if len(normalized) > 0 else None
         return v
     
     @field_validator('x', mode='before')
@@ -51,6 +51,11 @@ class VizSpec(BaseModel):
         # Normalize store_name and store_id to 'store'
         if v in ('store_name', 'store_id'):
             return 'store'
+        # Normalize time aggregations to 'date' (month, year, quarter, etc. are not columns)
+        if v and isinstance(v, str):
+            v_lower = v.lower()
+            if v_lower in ('month', 'year', 'quarter', 'week', 'day', 'date'):
+                return 'date'
         return v
 
 class ModelEnvelope(BaseModel):

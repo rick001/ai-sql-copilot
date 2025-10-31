@@ -442,6 +442,42 @@ Test coverage includes:
 - Ensure `.env` is in the project root (same level as `infra/`)
 - Check file name is exactly `.env` (not `.env.txt`)
 
+### Issue: Check which Bedrock models are available
+
+**Solution:**
+Use the provided script to list all available Bedrock models in your AWS account:
+
+```bash
+# Using Makefile (recommended - automatically uses Docker if available)
+make list-models
+
+# Run directly (requires boto3 installed locally)
+cd backend
+python3 list_bedrock_models.py
+
+# Run in Docker container (if services are running)
+docker compose -f infra/docker-compose.yml exec backend python3 list_bedrock_models.py
+
+# Or with custom region
+AWS_REGION=us-west-2 make list-models
+```
+
+**Note:** The `make list-models` command will automatically:
+- Use Docker container if services are running (dependencies already installed)
+- Fall back to local Python if Docker is not running and boto3 is installed
+- Show helpful error messages if boto3 is missing locally
+
+This script will:
+- List all available foundation models
+- Show model IDs, providers, and status
+- Highlight your currently configured model
+- Check if you have the necessary AWS permissions
+
+**Requirements:**
+- AWS credentials configured (`AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` or `aws configure`)
+- `bedrock:ListFoundationModels` permission
+- Either: Docker services running, OR `boto3` installed locally (`pip3 install boto3`)
+
 ## 🔐 Security
 
 - **SQL Validation**: All SQL queries are validated against an allowlist

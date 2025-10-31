@@ -49,13 +49,36 @@ async def chat(req: ChatRequest):
 
     system_prompt = client.load_system_prompt()
 
-    # Enhance user message to emphasize key dimensions
+    # Enhance user message to emphasize key dimensions, metrics, and query types
     enhanced_message = req.message
-    # If user mentions specific dimensions, reinforce them
-    if "categor" in req.message.lower() and "region" not in req.message.lower():
+    msg_lower = req.message.lower()
+    
+    # Detect time-series queries ("by date for each X" pattern)
+    is_time_series = "by date" in msg_lower and ("for each" in msg_lower or "per" in msg_lower)
+    
+    # Reinforce dimensions
+    if "categor" in msg_lower and "region" not in msg_lower:
         enhanced_message = f"{req.message} IMPORTANT: Use the category column, NOT region."
-    elif "region" in req.message.lower() and "categor" not in req.message.lower():
+    elif "region" in msg_lower and "categor" not in msg_lower:
         enhanced_message = f"{req.message} IMPORTANT: Use the region column."
+    
+    # Reinforce metrics and time-series queries
+    if is_time_series:
+        # Time-series query: emphasize no LIMIT, use correct metric
+        metric_instruction = ""
+        if any(word in msg_lower for word in ["units", "unit", "quantity", "quantities"]):
+            metric_instruction = " CRITICAL: The user asked about UNITS, use the 'units' column, NOT 'net_sales'."
+        elif any(word in msg_lower for word in ["sales", "net sales", "revenue"]):
+            metric_instruction = " CRITICAL: The user asked about NET SALES, use the 'net_sales' column."
+        
+        enhanced_message = f"{enhanced_message} CRITICAL: This is a TIME-SERIES query. Use: SELECT date, [dimension], SUM([metric]) FROM retail_sales GROUP BY date, [dimension] ORDER BY date. Do NOT use LIMIT. Return all dates.{metric_instruction}"
+    
+    # Reinforce metric for non-time-series queries too
+    if not is_time_series:
+        if any(word in msg_lower for word in ["units", "unit", "quantity", "quantities"]) and "net sales" not in msg_lower and "sales" not in msg_lower:
+            enhanced_message = f"{enhanced_message} IMPORTANT: User asked about UNITS. Use the 'units' column, NOT 'net_sales'."
+        elif any(word in msg_lower for word in ["sales", "net sales", "revenue"]) and "unit" not in msg_lower:
+            enhanced_message = f"{enhanced_message} IMPORTANT: User asked about SALES. Use the 'net_sales' column."
     
     messages = [
         {"role": "user", "content": enhanced_message}
@@ -102,9 +125,14 @@ async def chat(req: ChatRequest):
             help_text = (
                 f"Model ID error: {error_msg}\n\n"
                 "To fix:\n"
-                "1. Verify the model is available in AWS Bedrock Console\n"
-                "2. Check your model ID in .env: " + settings.bedrock_model_id + "\n"
-                "3. Ensure region matches: " + settings.aws_region
+                "1. Enable model access in AWS Bedrock Console:\n"
+                "   - Go to: AWS Console → Bedrock → Model access\n"
+                "   - Find: " + settings.bedrock_model_id + "\n"
+                "   - Click 'Enable' if it's not already enabled\n"
+                "   - Wait a few seconds for activation\n"
+                "2. Verify the model ID is correct in .env: " + settings.bedrock_model_id + "\n"
+                "3. Ensure region matches: " + settings.aws_region + "\n"
+                "4. Check available models: Run 'make list-models' to see all accessible models"
             )
             return ChatPayload(answer=help_text)
         model_type = "Ollama" if settings.use_ollama == 1 else "Bedrock"

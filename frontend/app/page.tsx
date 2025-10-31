@@ -225,11 +225,38 @@ function ChatMessage({ idx, turn }: { idx: number; turn: Turn }) {
 }
 
 function pickXKey(viz: VizSpec, rows: any[]): string | null {
-  // Prefer an explicit groupBy dimension like sku/region/category/store if present in rows
+  // Prioritize explicit x-axis specification over groupBy
+  // If viz.x is set, try to find it (handles variations like "date" vs "month")
+  if (viz.x && rows.length) {
+    // Try exact match first
+    if (viz.x in rows[0]) {
+      return viz.x
+    }
+    // For time-based queries, look for time-related columns (date, month, year, etc.)
+    if (viz.x === "date") {
+      // Look for date-related columns
+      const dateColumns = ['date', 'month', 'year', 'quarter', 'week', 'day']
+      for (const col of dateColumns) {
+        if (col in rows[0]) {
+          return col
+        }
+      }
+      // Also check for columns containing "date" or "month"
+      const dateLike = Object.keys(rows[0]).find(k => 
+        k.toLowerCase().includes('date') || 
+        k.toLowerCase().includes('month') ||
+        k.toLowerCase().includes('year')
+      )
+      if (dateLike) return dateLike
+    }
+  }
+  
+  // For bar charts or when x is not specified, prefer groupBy dimensions
   const candidates = [...(viz.groupBy || []), viz.x]
   for (const key of candidates) {
-    if (rows.length && key in rows[0]) return key
+    if (rows.length && key && key in rows[0]) return key
   }
+  
   // Fallback: first string-like field
   const first = rows.length ? Object.keys(rows[0]).find(k => typeof rows[0][k] === "string") : null
   return first || (rows.length ? Object.keys(rows[0])[0] : null)
@@ -286,19 +313,106 @@ function ChartOrTable({ viz, rows }: { viz: VizSpec; rows: any[] }) {
     }
   }
   
-  const data = (rows && rows.length && actualYKey && xKey)
-    ? rows
-        .map((r) => {
-          const xVal = r[xKey]
-          const yVal = r[actualYKey!]
-          // Convert to number if possible, otherwise use as string
-          const yNum = typeof yVal === 'string' && !isNaN(Number(yVal)) ? Number(yVal) : 
-                       typeof yVal === 'number' ? yVal : 
-                       yVal
-          return { x: xVal ?? 'Unknown', y: yNum ?? 0 }
+  // Process data and aggregate if groupBy is specified
+  let data: Array<{ x: any; y: number; [key: string]: any }> = []
+  if (rows && rows.length && actualYKey) {
+    const mapped = rows.map((r) => {
+      const xVal = r[xKey!]
+      const yVal = r[actualYKey!]
+      // Convert to number if possible, otherwise use as string
+      const yNum = typeof yVal === 'string' && !isNaN(Number(yVal)) ? Number(yVal) : 
+                   typeof yVal === 'number' ? yVal : 
+                   0
+      const result: any = { x: xVal ?? 'Unknown', y: yNum ?? 0 }
+      
+      // Include groupBy dimensions in the data for multi-series charts
+      if (viz.groupBy && viz.groupBy.length > 0) {
+        viz.groupBy.forEach(dim => {
+          // Try to find the dimension key (handle variations like store_name/store_id -> store)
+          const dimKey = Object.keys(r).find(k => 
+            k.toLowerCase() === dim.toLowerCase() || 
+            (dim === 'store' && (k.toLowerCase() === 'store_name' || k.toLowerCase() === 'store_id'))
+          )
+          if (dimKey && r[dimKey] !== undefined) {
+            result[dim] = r[dimKey]
+          }
         })
-        .filter(d => d.y !== undefined && d.y !== null && !isNaN(d.y))
-    : []
+      }
+      
+      return result
+    }).filter(d => d.y !== undefined && d.y !== null && !isNaN(d.y))
+    
+    // Aggregate if groupBy is specified but xKey is null or if we have duplicate x values
+    // This handles cases where SQL returns multiple rows for the same x value that should be aggregated
+    if (viz.groupBy && viz.groupBy.length > 0) {
+      if (!xKey || !viz.x) {
+        // No x-axis specified: aggregate by groupBy dimensions
+        const grouped = new Map<string, { x: any; y: number; [key: string]: any }>()
+        
+        mapped.forEach(d => {
+          // Create a key from the groupBy dimensions
+          const groupKey = viz.groupBy!.map(dim => String(d[dim] ?? 'Unknown')).join('|')
+          const existing = grouped.get(groupKey)
+          
+          if (existing) {
+            // Aggregate: sum the y values
+            existing.y = (existing.y || 0) + (d.y || 0)
+          } else {
+            // Create new entry, use the first groupBy value as x
+            const firstGroupByValue = d[viz.groupBy![0]] ?? groupKey
+            grouped.set(groupKey, { ...d, x: firstGroupByValue })
+          }
+        })
+        
+        data = Array.from(grouped.values())
+      } else {
+        // x-axis is specified: for multi-series charts, transform data for recharts
+        if (xKey && viz.groupBy && viz.groupBy.length > 0) {
+          // For charts with x-axis and groupBy, transform to: {x: 'value', 'Category1': 100, 'Category2': 200, ...}
+          // This works for both line charts (time-series) and bar charts (grouped bars)
+          const xMap = new Map<string, Record<string, any>>()
+          
+          mapped.forEach(d => {
+            const xStr = String(d.x)
+            if (!xMap.has(xStr)) {
+              xMap.set(xStr, { x: xStr })
+            }
+            const xEntry = xMap.get(xStr)!
+            
+            // Add the y value keyed by the groupBy dimension value
+            viz.groupBy!.forEach(dim => {
+              if (d[dim] !== undefined) {
+                const dimValue = String(d[dim])
+                xEntry[dimValue] = (xEntry[dimValue] || 0) + (d.y || 0)
+              }
+            })
+          })
+          
+          data = Array.from(xMap.values())
+          
+          // Sort by x value (for time-series, sort as dates; for others, sort alphabetically)
+          if (viz.x === "date" || (xKey && ['date', 'month', 'year'].some(k => xKey.toLowerCase().includes(k)))) {
+            data.sort((a, b) => {
+              try {
+                const dateA = new Date(a.x).getTime()
+                const dateB = new Date(b.x).getTime()
+                return dateA - dateB
+              } catch {
+                return String(a.x).localeCompare(String(b.x))
+              }
+            })
+          } else {
+            data.sort((a, b) => String(a.x).localeCompare(String(b.x)))
+          }
+        } else {
+          // Keep data as-is for other cases (no groupBy or no x-axis)
+          data = mapped
+        }
+      }
+    } else {
+      data = mapped
+    }
+  }
 
   if (!data.length) {
     return <div className="text-sm text-gray-600 bg-gray-50 rounded-lg p-4">No valid data points found. Available keys: {rows.length > 0 ? Object.keys(rows[0]).join(', ') : 'none'}</div>
@@ -306,32 +420,94 @@ function ChartOrTable({ viz, rows }: { viz: VizSpec; rows: any[] }) {
 
   const TopList = () => {
     const displayYKey = actualYKey || yKey
+    
+    // For time-series queries (x-axis is date with groupBy), aggregate by groupBy dimension instead
+    let displayData: Array<{ label: string; value: any }> = []
+    
+    if (viz.x === "date" && viz.groupBy && viz.groupBy.length > 0 && rows.length > 0) {
+      // Time-series: aggregate totals by groupBy dimension (e.g., total units per region)
+      const aggregated = new Map<string, number>()
+      const groupByKey = viz.groupBy[0]
+      const groupByColumn = Object.keys(rows[0]).find(k => 
+        k.toLowerCase() === groupByKey.toLowerCase() ||
+        (groupByKey === 'store' && (k.toLowerCase() === 'store_name' || k.toLowerCase() === 'store_id'))
+      )
+      
+      if (groupByColumn && displayYKey) {
+        rows.forEach(r => {
+          const groupValue = String(r[groupByColumn] ?? 'Unknown')
+          const yValue = Number(r[displayYKey] ?? 0)
+          aggregated.set(groupValue, (aggregated.get(groupValue) || 0) + yValue)
+        })
+        
+        displayData = Array.from(aggregated.entries())
+          .map(([label, value]) => ({ label, value }))
+          .sort((a, b) => b.value - a.value)
+          .slice(0, 10)
+      } else {
+        // Fallback: show first 10 rows
+        displayData = rows.slice(0, 10).map((r, i) => ({
+          label: xKey ? String(r[xKey!] ?? 'N/A') : `Row ${i + 1}`,
+          value: displayYKey ? (r[displayYKey] ?? 'N/A') : 'N/A'
+        }))
+      }
+    } else {
+      // For non-time-series: show top results by y-value
+      displayData = rows
+        .map(r => ({
+          label: xKey ? String(r[xKey!] ?? 'N/A') : 'N/A',
+          value: displayYKey ? (r[displayYKey] ?? 0) : 0
+        }))
+        .sort((a, b) => {
+          const aVal = typeof a.value === 'number' ? a.value : 0
+          const bVal = typeof b.value === 'number' ? b.value : 0
+          return bVal - aVal
+        })
+        .slice(0, 10)
+    }
+    
     return (
       <div className="bg-gray-50 rounded-lg p-4 border border-gray-200">
         <div className="font-semibold text-gray-800 mb-3 flex items-center gap-2">
           <svg className="w-4 h-4 text-[#DA291C]" fill="currentColor" viewBox="0 0 20 20">
             <path fillRule="evenodd" d="M3.293 9.707a1 1 0 010-1.414l6-6a1 1 0 011.414 0l6 6a1 1 0 01-1.414 1.414L11 5.414V17a1 1 0 11-2 0V5.414L4.707 9.707a1 1 0 01-1.414 0z" clipRule="evenodd" />
           </svg>
-          Top Results
+          {viz.x === "date" && viz.groupBy && viz.groupBy.length > 0 
+            ? "Total by " + (viz.groupBy[0] || "Category")
+            : "Top Results"}
         </div>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-          {rows.slice(0, 10).map((r, i) => {
-            const xVal = xKey ? (r[xKey] ?? 'N/A') : 'N/A'
-            const yVal = displayYKey ? (r[displayYKey] ?? 'N/A') : 'N/A'
-            return (
-              <div key={i} className="flex items-center justify-between bg-white rounded-lg px-3 py-2 border border-gray-200 hover:border-[#DA291C] transition-colors">
-                <span className="text-gray-600 text-sm">{i + 1}.</span>
-                <span className="flex-1 text-gray-800 font-medium ml-2 truncate">{String(xVal)}</span>
-                <span className="text-[#DA291C] font-semibold ml-2">{String(yVal)}</span>
-              </div>
-            )
-          })}
+          {displayData.map((item, i) => (
+            <div key={i} className="flex items-center justify-between bg-white rounded-lg px-3 py-2 border border-gray-200 hover:border-[#DA291C] transition-colors">
+              <span className="text-gray-600 text-sm">{i + 1}.</span>
+              <span className="flex-1 text-gray-800 font-medium ml-2 truncate">{String(item.label)}</span>
+              <span className="text-[#DA291C] font-semibold ml-2">{typeof item.value === 'number' ? item.value.toLocaleString() : String(item.value)}</span>
+            </div>
+          ))}
         </div>
       </div>
     )
   }
 
   if (viz.type === "line") {
+    // Get unique series names from groupBy if available
+    const seriesKeys: string[] = []
+    if (viz.groupBy && viz.groupBy.length > 0 && data.length > 0) {
+      // Extract unique series names from data keys (exclude 'x' and 'date')
+      const allKeys = new Set<string>()
+      data.forEach(d => {
+        Object.keys(d).forEach(k => {
+          if (k !== 'x' && k !== 'date' && k !== 'y') {
+            allKeys.add(k)
+          }
+        })
+      })
+      seriesKeys.push(...Array.from(allKeys))
+    }
+    
+    // Color palette for multiple series
+    const colors = ['#DA291C', '#0078D4', '#107C10', '#FF8C00', '#8B008B', '#00CED1']
+    
     return (
       <>
         <div className="bg-gradient-to-br from-white to-gray-50 rounded-lg p-4 border border-gray-200 mb-4">
@@ -359,14 +535,31 @@ function ChartOrTable({ viz, rows }: { viz: VizSpec; rows: any[] }) {
                   }}
                 />
                 <Legend wrapperStyle={{ paddingTop: '10px' }} />
-                <Line 
-                  type="monotone" 
-                  dataKey="y" 
-                  stroke="#DA291C" 
-                  strokeWidth={3} 
-                  dot={{ fill: '#DA291C', strokeWidth: 2, r: 3 }}
-                  activeDot={{ r: 5 }}
-                />
+                {seriesKeys.length > 0 ? (
+                  // Render multiple lines for multi-series chart
+                  seriesKeys.map((seriesKey, idx) => (
+                    <Line 
+                      key={seriesKey}
+                      type="monotone" 
+                      dataKey={seriesKey}
+                      name={seriesKey}
+                      stroke={colors[idx % colors.length]} 
+                      strokeWidth={3} 
+                      dot={{ fill: colors[idx % colors.length], strokeWidth: 2, r: 3 }}
+                      activeDot={{ r: 5 }}
+                    />
+                  ))
+                ) : (
+                  // Single line chart
+                  <Line 
+                    type="monotone" 
+                    dataKey="y" 
+                    stroke="#DA291C" 
+                    strokeWidth={3} 
+                    dot={{ fill: '#DA291C', strokeWidth: 2, r: 3 }}
+                    activeDot={{ r: 5 }}
+                  />
+                )}
               </LineChart>
             </ResponsiveContainer>
           </div>
@@ -376,6 +569,24 @@ function ChartOrTable({ viz, rows }: { viz: VizSpec; rows: any[] }) {
     )
   }
 
+  // For bar charts with groupBy, check if we have multiple series
+  const barSeriesKeys: string[] = []
+  if (viz.groupBy && viz.groupBy.length > 0 && data.length > 0) {
+    // Extract unique series names from data keys (exclude 'x')
+    const allKeys = new Set<string>()
+    data.forEach(d => {
+      Object.keys(d).forEach(k => {
+        if (k !== 'x' && k !== 'date' && k !== 'y') {
+          allKeys.add(k)
+        }
+      })
+    })
+    barSeriesKeys.push(...Array.from(allKeys))
+  }
+  
+  // Color palette for multiple series
+  const barColors = ['#DA291C', '#0078D4', '#107C10', '#FF8C00', '#8B008B', '#00CED1', '#FF1493', '#00CED1']
+  
   return (
     <>
       <div className="bg-gradient-to-br from-white to-gray-50 rounded-lg p-4 border border-gray-200 mb-4">
@@ -403,11 +614,25 @@ function ChartOrTable({ viz, rows }: { viz: VizSpec; rows: any[] }) {
                 }}
               />
               <Legend wrapperStyle={{ paddingTop: '10px' }} />
-              <Bar 
-                dataKey="y" 
-                fill="#DA291C"
-                radius={[8, 8, 0, 0]}
-              />
+              {barSeriesKeys.length > 0 ? (
+                // Render multiple bars for grouped/stacked bar chart
+                barSeriesKeys.map((seriesKey, idx) => (
+                  <Bar 
+                    key={seriesKey}
+                    dataKey={seriesKey}
+                    name={seriesKey}
+                    fill={barColors[idx % barColors.length]}
+                    radius={idx === barSeriesKeys.length - 1 ? [8, 8, 0, 0] : [0, 0, 0, 0]}
+                  />
+                ))
+              ) : (
+                // Single bar chart
+                <Bar 
+                  dataKey="y" 
+                  fill="#DA291C"
+                  radius={[8, 8, 0, 0]}
+                />
+              )}
             </BarChart>
           </ResponsiveContainer>
         </div>
@@ -434,18 +659,93 @@ function FullscreenChart({ viz, rows, onClose }: { viz: VizSpec; rows: any[]; on
     }
   }
   
-  const data = (rows && rows.length && actualYKey && xKey)
-    ? rows
-        .map((r) => {
-          const xVal = r[xKey]
-          const yVal = r[actualYKey!]
-          const yNum = typeof yVal === 'string' && !isNaN(Number(yVal)) ? Number(yVal) : 
-                       typeof yVal === 'number' ? yVal : 
-                       yVal
-          return { x: xVal ?? 'Unknown', y: yNum ?? 0 }
+  // Process data and aggregate if groupBy is specified (same logic as ChartOrTable)
+  let data: Array<{ x: any; y: number; [key: string]: any }> = []
+  if (rows && rows.length && actualYKey) {
+    const mapped = rows.map((r) => {
+      const xVal = r[xKey!]
+      const yVal = r[actualYKey!]
+      const yNum = typeof yVal === 'string' && !isNaN(Number(yVal)) ? Number(yVal) : 
+                   typeof yVal === 'number' ? yVal : 
+                   0
+      const result: any = { x: xVal ?? 'Unknown', y: yNum ?? 0 }
+      
+      // Include groupBy dimensions in the data for multi-series charts
+      if (viz.groupBy && viz.groupBy.length > 0) {
+        viz.groupBy.forEach(dim => {
+          const dimKey = Object.keys(r).find(k => 
+            k.toLowerCase() === dim.toLowerCase() || 
+            (dim === 'store' && (k.toLowerCase() === 'store_name' || k.toLowerCase() === 'store_id'))
+          )
+          if (dimKey && r[dimKey] !== undefined) {
+            result[dim] = r[dimKey]
+          }
         })
-        .filter(d => d.y !== undefined && d.y !== null && !isNaN(d.y))
-    : []
+      }
+      
+      return result
+    }).filter(d => d.y !== undefined && d.y !== null && !isNaN(d.y))
+    
+    // Transform data for multi-series charts
+    if (viz.groupBy && viz.groupBy.length > 0) {
+      if (!xKey || !viz.x) {
+        // No x-axis specified: aggregate by groupBy dimensions
+        const grouped = new Map<string, { x: any; y: number; [key: string]: any }>()
+        
+        mapped.forEach(d => {
+          const groupKey = viz.groupBy!.map(dim => String(d[dim] ?? 'Unknown')).join('|')
+          const existing = grouped.get(groupKey)
+          
+          if (existing) {
+            existing.y = (existing.y || 0) + (d.y || 0)
+          } else {
+            const firstGroupByValue = d[viz.groupBy![0]] ?? groupKey
+            grouped.set(groupKey, { ...d, x: firstGroupByValue })
+          }
+        })
+        
+        data = Array.from(grouped.values())
+      } else {
+        // x-axis is specified: transform for multi-series charts
+        const xMap = new Map<string, Record<string, any>>()
+        
+        mapped.forEach(d => {
+          const xStr = String(d.x)
+          if (!xMap.has(xStr)) {
+            xMap.set(xStr, { x: xStr })
+          }
+          const xEntry = xMap.get(xStr)!
+          
+          // Add the y value keyed by the groupBy dimension value
+          viz.groupBy!.forEach(dim => {
+            if (d[dim] !== undefined) {
+              const dimValue = String(d[dim])
+              xEntry[dimValue] = (xEntry[dimValue] || 0) + (d.y || 0)
+            }
+          })
+        })
+        
+        data = Array.from(xMap.values())
+        
+        // Sort by x value
+        if (viz.x === "date" || (xKey && ['date', 'month', 'year'].some(k => xKey.toLowerCase().includes(k)))) {
+          data.sort((a, b) => {
+            try {
+              const dateA = new Date(a.x).getTime()
+              const dateB = new Date(b.x).getTime()
+              return dateA - dateB
+            } catch {
+              return String(a.x).localeCompare(String(b.x))
+            }
+          })
+        } else {
+          data.sort((a, b) => String(a.x).localeCompare(String(b.x)))
+        }
+      }
+    } else {
+      data = mapped
+    }
+  }
 
   // Close on ESC key
   useEffect(() => {
@@ -506,7 +806,39 @@ function FullscreenChart({ viz, rows, onClose }: { viz: VizSpec; rows: any[]; on
                     <YAxis tick={{ fontSize: 12 }} />
                     <Tooltip />
                     <Legend />
-                    <Line type="monotone" dataKey="y" stroke="#DA291C" strokeWidth={2} dot={false} />
+                    {/* Check for multi-series */}
+                    {viz.groupBy && viz.groupBy.length > 0 && data.length > 0 ? (() => {
+                      const seriesKeys: string[] = []
+                      const allKeys = new Set<string>()
+                      data.forEach(d => {
+                        Object.keys(d).forEach(k => {
+                          if (k !== 'x' && k !== 'date' && k !== 'y') {
+                            allKeys.add(k)
+                          }
+                        })
+                      })
+                      seriesKeys.push(...Array.from(allKeys))
+                      const colors = ['#DA291C', '#0078D4', '#107C10', '#FF8C00', '#8B008B', '#00CED1']
+                      
+                      return seriesKeys.length > 0 ? (
+                        seriesKeys.map((seriesKey, idx) => (
+                          <Line 
+                            key={seriesKey}
+                            type="monotone" 
+                            dataKey={seriesKey}
+                            name={seriesKey}
+                            stroke={colors[idx % colors.length]} 
+                            strokeWidth={3} 
+                            dot={{ fill: colors[idx % colors.length], strokeWidth: 2, r: 3 }}
+                            activeDot={{ r: 5 }}
+                          />
+                        ))
+                      ) : (
+                        <Line type="monotone" dataKey="y" stroke="#DA291C" strokeWidth={2} dot={false} />
+                      )
+                    })() : (
+                      <Line type="monotone" dataKey="y" stroke="#DA291C" strokeWidth={2} dot={false} />
+                    )}
                   </LineChart>
                 </ResponsiveContainer>
               </div>
@@ -521,7 +853,36 @@ function FullscreenChart({ viz, rows, onClose }: { viz: VizSpec; rows: any[]; on
                     <YAxis tick={{ fontSize: 12 }} />
                     <Tooltip />
                     <Legend />
-                    <Bar dataKey="y" fill="#DA291C" />
+                    {/* Check for multi-series */}
+                    {viz.groupBy && viz.groupBy.length > 0 && data.length > 0 ? (() => {
+                      const seriesKeys: string[] = []
+                      const allKeys = new Set<string>()
+                      data.forEach(d => {
+                        Object.keys(d).forEach(k => {
+                          if (k !== 'x' && k !== 'date' && k !== 'y') {
+                            allKeys.add(k)
+                          }
+                        })
+                      })
+                      seriesKeys.push(...Array.from(allKeys))
+                      const colors = ['#DA291C', '#0078D4', '#107C10', '#FF8C00', '#8B008B', '#00CED1', '#FF1493', '#00CED1']
+                      
+                      return seriesKeys.length > 0 ? (
+                        seriesKeys.map((seriesKey, idx) => (
+                          <Bar 
+                            key={seriesKey}
+                            dataKey={seriesKey}
+                            name={seriesKey}
+                            fill={colors[idx % colors.length]}
+                            radius={idx === seriesKeys.length - 1 ? [8, 8, 0, 0] : [0, 0, 0, 0]}
+                          />
+                        ))
+                      ) : (
+                        <Bar dataKey="y" fill="#DA291C" />
+                      )
+                    })() : (
+                      <Bar dataKey="y" fill="#DA291C" />
+                    )}
                   </BarChart>
                 </ResponsiveContainer>
               </div>

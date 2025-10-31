@@ -122,19 +122,41 @@ class BedrockClient:
         if not tool_calls:
             return self._extract_json_envelope(response)
 
-        # Execute tools
+        # Extract the assistant's response content (which includes toolUse blocks)
+        # This is required - Bedrock needs to see the toolUse blocks before toolResult blocks
+        output = response.get("output", {})
+        assistant_message = output.get("message", {})
+        assistant_content = assistant_message.get("content", [])
+        
+        # Add the assistant's response to conversation history (includes toolUse blocks)
+        conversation_messages.append({
+            "role": "assistant",
+            "content": assistant_content
+        })
+
+        # Execute tools and collect tool results
+        tool_results = []
         for call in tool_calls:
             name = call.get("name")
             input_json = call.get("input") or {}
             result = tool_runner.run(name, input_json)
             tool_use_id = call.get("toolUseId") or call.get("id", "")
-            # Try Converse format first
-            tool_message = {
+            # Bedrock Converse API format: toolUseId must be inside toolResult
+            tool_results.append({
+                "toolResult": {
+                    "toolUseId": tool_use_id,
+                    "status": "success",
+                    "content": [{"text": json.dumps(result)}]
+                }
+            })
+
+        # Add all tool results in a single user message
+        # Bedrock expects all toolResults to match the toolUses from the previous assistant message
+        if tool_results:
+            conversation_messages.append({
                 "role": "user",
-                "content": [{"toolUseId": tool_use_id, "toolResult": {"status": "success", "content": [{"text": json.dumps(result)}]}}]
-            }
-            # If that fails, will use Chat API format which is just the result text
-            conversation_messages.append(tool_message)
+                "content": tool_results
+            })
 
         # Final call with tool results
         response2 = self._invoke_converse(system, conversation_messages, tools)
@@ -167,15 +189,28 @@ class BedrockClient:
                 messages=formatted_messages,
                 toolConfig={"tools": tools} if tools else None,
                 inferenceConfig={
-                    "maxTokens": 1024,
+                    "maxTokens": 2048,  # Increased for better responses
                     "temperature": 0.2,
                 }
             )
             return response
         except Exception as e:
-            # Fallback to Chat API (invoke_model) if Converse fails
-            if "ValidationException" in str(e) or "Converse" in str(e):
-                return self._invoke_chat_api(system, messages, tools)
+            error_str = str(e)
+            # Only fallback to Chat API for specific cases, not for invalid model ID
+            # If model ID is invalid in Converse, it will also be invalid in Chat API
+            if "model identifier is invalid" in error_str.lower() or "invalid model" in error_str.lower():
+                # Don't fallback - raise the error so user knows the model ID is wrong
+                raise
+            # For other ValidationExceptions or Converse errors, try Chat API
+            if "ValidationException" in error_str:
+                # Log that we're falling back, but some models don't support Chat API
+                # So we might still fail, but at least we tried
+                try:
+                    return self._invoke_chat_api(system, messages, tools)
+                except Exception as chat_error:
+                    # If Chat API also fails, raise the original Converse error
+                    # This gives better error message about the actual issue
+                    raise e from chat_error
             raise
 
     def _invoke_chat_api(self, system: List[Dict[str, str]], messages: List[Dict[str, Any]], tools: List[Dict[str, Any]]) -> Dict[str, Any]:
