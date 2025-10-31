@@ -49,7 +49,45 @@ Before you begin, ensure you have:
 
 ## 🚀 Quick Start
 
-### Option 1: Docker Compose (Recommended)
+### Option 1: Single Command Startup (Recommended)
+
+The easiest way to start the system is using the provided startup script or Makefile:
+
+**Using Makefile:**
+```bash
+make start
+```
+
+**Using startup script:**
+```bash
+./start.sh
+```
+
+Both commands will:
+- Automatically create `.env` from `env.example` if it doesn't exist
+- Automatically start Colima (if installed) if Docker isn't running
+- Build and start all Docker services (frontend, backend, ClickHouse)
+- Seed the database with sample data
+- Show you access URLs
+
+After startup, access:
+- **Frontend**: http://localhost:3000
+- **Backend API**: http://localhost:8000
+- **Health Check**: http://localhost:8000/healthz
+- **ClickHouse**: http://localhost:8123
+
+**Note**: The frontend displays CVS branding as part of the POC demonstration, but the underlying data is synthetic and hypothetical. The system can be adapted to work with any SQL database and data schema.
+
+**Other useful commands:**
+```bash
+make stop      # Stop all services
+make restart   # Restart all services
+make seed      # Re-seed the database
+make logs      # View logs from all services
+make clean     # Stop services and remove volumes
+```
+
+### Option 2: Manual Docker Compose Setup
 
 1. **Clone and navigate to the project:**
    ```bash
@@ -84,15 +122,7 @@ Before you begin, ensure you have:
    docker compose -f infra/docker-compose.yml exec backend python -m app.seed
    ```
 
-6. **Access the application:**
-   - **Frontend**: http://localhost:3000
-   - **Backend API**: http://localhost:8000
-   - **Health Check**: http://localhost:8000/healthz
-   - **ClickHouse**: http://localhost:8123 (if using ClickHouse)
-
-   **Note**: The frontend displays CVS branding as part of the POC demonstration, but the underlying data is synthetic and hypothetical. The system can be adapted to work with any SQL database and data schema.
-
-### Option 2: Local Development
+### Option 3: Local Development (Without Docker)
 
 #### Backend Setup
 
@@ -308,6 +338,13 @@ CREATE TABLE retail_sales (
 ## 🔧 Usage
 
 ### Starting the Application
+
+**Quickest way:**
+```bash
+make start
+```
+
+Or manually:
 
 1. **Ensure Ollama is running** (if using Ollama):
    ```bash
